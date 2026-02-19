@@ -115,6 +115,10 @@ def close_bo(attivazione_id: int, valore: str, note: str | None) -> int:
     )
     return int(res[0]["event_id"])
 
+
+# -------------------------
+# Mapping piste (DB-side)
+# -------------------------
 @st.cache_data(ttl=15)
 def get_pista_map(db_role: str) -> dict[str, str]:
     rows = query("SELECT codice, valore_db FROM app.api_pista_map();", None, db_role)
@@ -126,7 +130,6 @@ def pista_value(codice: str) -> str:
     if codice not in m:
         raise RuntimeError(f"Pista non mappata in app.pista_map: {codice}")
     return m[codice]
-
 
 
 # -------------------------
@@ -254,12 +257,11 @@ def render_dashboard_esiti() -> None:
     pv_label_to_id = {lbl: pv_id for (lbl, pv_id) in pv_options}
 
     pista_options = [
-    ("TUTTE", None),
-    ("MNP", "MNP"),
-    ("FAMILY", "FAMILY"),
+        ("TUTTE", None),
+        ("MNP", "MNP"),
+        ("FAMILY", "FAMILY"),
     ]
     pista_label_to_code = {lbl: v for (lbl, v) in pista_options}
-
 
     colA, colB, colC = st.columns([2, 2, 2])
     with colA:
@@ -270,15 +272,15 @@ def render_dashboard_esiti() -> None:
         limit = st.number_input("Righe drill-down (max 5000)", min_value=10, max_value=5000, value=300, step=10)
 
     pv_id = pv_label_to_id[pv_label]
-    pista_code = pista_label_to_code[pista_label]
-    pista_value = pista_value(pista_code) if pista_code is not None else None
 
+    pista_code = pista_label_to_code[pista_label]
+    pista_db_value = pista_value(pista_code) if pista_code is not None else None
 
     # KPI (torte) + selezione stato SOLO via click
     selected_state = None
     selected_pista_for_drill = None
 
-    if pista_value is None:
+    if pista_db_value is None:
         st.caption("Pista: TUTTE → torte per pista (MNP + FAMILY)")
         c1, c2 = st.columns(2)
 
@@ -293,7 +295,7 @@ def render_dashboard_esiti() -> None:
                 selected_state, selected_pista_for_drill = s, psel
 
     else:
-        s, psel = render_one_pie(pv_id, pista_value, "Distribuzione esiti", "single")
+        s, psel = render_one_pie(pv_id, pista_db_value, "Distribuzione esiti", "single")
         if s:
             selected_state, selected_pista_for_drill = s, psel
 
@@ -370,7 +372,6 @@ def render_dashboard_esiti() -> None:
                 f"\n- Esito attuale: {row.get('esito_corrente')}"
             )
 
-            # salvo dettagli per conferma (punto 4) e per default nota (punto 5)
             st.session_state["selected_pratica"] = {
                 "attivazione_id": selected_att_id,
                 "data_attivazione": row.get("data_attivazione"),
@@ -415,8 +416,6 @@ def render_dashboard_esiti() -> None:
 
         pratica = st.session_state.get("selected_pratica") or {}
         default_id = int(pratica.get("attivazione_id") or 1)
-
-        # 5) extra: precompilo nota con nota attuale (se presente) + mostra contesto
         default_note = str(pratica.get("nota_attuale") or "").strip()
 
         with st.form("form_esiti_app_owner", clear_on_submit=False):
@@ -447,7 +446,6 @@ def render_dashboard_esiti() -> None:
             esito_new = str(esito_new).strip()
             nota_txt = str(nota or "").strip()
 
-            # Validazioni: identiche allo Store mode
             if esito_new == "IN_LAVORAZIONE" and not nota_txt:
                 st.error("IN_LAVORAZIONE richiede nota obbligatoria.")
                 return
@@ -466,7 +464,6 @@ def render_dashboard_esiti() -> None:
                     st.error("Esito non valido.")
                     return
 
-                # 4) conferma con riepilogo (pratica + azione)
                 riepilogo = st.session_state.get("selected_pratica") or {}
                 st.success(
                     "Esito applicato"
@@ -483,7 +480,6 @@ def render_dashboard_esiti() -> None:
                     )
                 )
 
-                # 3) auto-reset SEL: cambia key del data_editor + pulisci selezione
                 st.session_state["drill_sel_reset_token"] += 1
                 st.session_state.pop("selected_pratica", None)
 
@@ -495,7 +491,7 @@ def render_dashboard_esiti() -> None:
 
 
 # ==========================
-# NEGOZIO (worklist + KPI tab) - invariato dove non richiesto
+# NEGOZIO (worklist + KPI tab)
 # ==========================
 def render_kpi_per_tab(pista_exact: str | None, energia_mode: bool = False) -> None:
     st.subheader("KPI (tab)")
@@ -606,7 +602,7 @@ def render_pratiche_lavorate(pista_exact: str | None, energia_mode: bool = False
     )
 
 
-def render_worklist(pista_exact: str | None, energia_mode: bool = False) -> None:
+def render_worklist(pista_exact: str | None, energia_mode: bool = False, pista_code: str | None = None) -> None:
     st.subheader("Worklist")
 
     if energia_mode:
@@ -614,8 +610,8 @@ def render_worklist(pista_exact: str | None, energia_mode: bool = False) -> None
         return
 
     if pista_exact:
-        # Ordering: MNP resta invariato; FAMILY forzato "dal più vecchio al più nuovo"
-        if pista_exact == "FAMILY":
+        # Ordering: FAMILY dal più vecchio al più nuovo; MNP invariato
+        if pista_code == "FAMILY":
             order_clause = "ORDER BY wl.data_attivazione ASC NULLS LAST, wl.sort_at ASC NULLS LAST"
         else:
             order_clause = "ORDER BY wl.sort_at ASC NULLS LAST"
@@ -711,7 +707,7 @@ def render_worklist(pista_exact: str | None, energia_mode: bool = False) -> None
 
     st.caption("Compila 'Esito (nuovo)' e 'Nota' sulla riga, poi premi **Applica**.")
 
-    if st.button("Applica", type="primary", key=f"apply_{pista_exact or 'energia'}"):
+    if st.button("Applica", type="primary", key=f"apply_{pista_code or pista_exact or 'energia'}"):
         to_apply = edited[edited["esito_operatore"].astype(str).str.strip() != ""].copy()
         if to_apply.empty:
             st.info("Nessuna modifica da applicare.")
@@ -782,7 +778,7 @@ else:
         st.divider()
         render_pratiche_lavorate(pista)
         st.divider()
-        render_worklist(pista, pista_code= "FAMILY")
+        render_worklist(pista, pista_code="FAMILY")
 
     with tab_energia:
         render_kpi_per_tab(None, energia_mode=True)
