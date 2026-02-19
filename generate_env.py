@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 
 # ==============================
 # CONFIGURAZIONE BASE (COMUNE)
@@ -9,6 +10,9 @@ DB_PORT=5432
 DB_NAME=dashboard_gest
 DB_SSLMODE=disable
 """
+
+# DEMO_MODE per avvio locale (0/1)
+DEFAULT_DEMO_MODE = "1"
 
 # Cartella env reale del progetto
 ENV_DIR = Path(__file__).resolve().parent / "env"
@@ -34,14 +38,26 @@ NEGOZI = {
     "pescara_veii": "op_pescara_veii",
 }
 
+# Password negozi (login UI)
+NEGOZI_PASSWORD = {
+    "op_ancona_centro": "Ancona#24",
+    "op_conero": "Conero#24",
+    "op_chieti_scalo": "Chieti#24",
+    "op_santangelo": "Sangel#24",
+    "op_val_vibrata": "Valvib#24",
+    "op_san_giovanni_teatino": "SGTeat#24",
+    "op_porto_grande": "Porto#24",
+    "op_vasto": "Vasto#24",
+    "op_campobasso": "Campo#24",
+    "op_pescara_veii": "Pesca#24",
+}
+
 # ==============================
 # PROFILI EXTRA (facoltativi)
 # ==============================
-# Se vuoi rigenerare anche questi, valorizza le password e metti GENERATE_* = True
 GENERATE_APP_OWNER = True
 APP_OWNER_USER = "app_owner"
 APP_OWNER_PASSWORD = "619"
-
 
 GENERATE_DASHBOARD_OWNER = True
 DASHBOARD_OWNER_USER = "dashboard_owner"
@@ -50,6 +66,31 @@ DASHBOARD_OWNER_PASSWORD = "619"
 GENERATE_IMPORT_APP_OWNER = True
 IMPORT_USER = "app_owner"
 IMPORT_PASSWORD = "Danilo33"
+
+# ==============================
+# USERS_JSON (per login locale)
+# ==============================
+def build_users_json() -> str:
+    """
+    JSON compatto (una riga) user->password:
+    USERS_JSON={"app_owner":"619", ...}
+    """
+    users: dict[str, str] = {}
+
+    if GENERATE_APP_OWNER:
+        users[APP_OWNER_USER] = APP_OWNER_PASSWORD
+    if GENERATE_DASHBOARD_OWNER:
+        users[DASHBOARD_OWNER_USER] = DASHBOARD_OWNER_PASSWORD
+
+    for _, role in NEGOZI.items():
+        pwd = NEGOZI_PASSWORD.get(role)
+        if pwd:
+            users[role] = pwd
+
+    return json.dumps(users, ensure_ascii=False, separators=(",", ":"))
+
+
+USERS_JSON_VALUE = build_users_json()
 
 # ==============================
 # HELPERS
@@ -61,6 +102,8 @@ def write_env(filename: str, db_user: str, db_password: str, db_role: str) -> No
         + f"DB_USER={db_user}\n"
         + f"DB_PASSWORD={db_password}\n"
         + f"DB_ROLE={db_role}\n"
+        + f"USERS_JSON={USERS_JSON_VALUE}\n"
+        + f"DEMO_MODE={DEFAULT_DEMO_MODE}\n"
     )
     env_path.write_text(content, encoding="utf-8")
     print(f"Creato/Aggiornato: env\\{filename}")
@@ -83,8 +126,6 @@ def generate_optional_profiles() -> None:
         write_env(".env_dashboard_owner", DASHBOARD_OWNER_USER, DASHBOARD_OWNER_PASSWORD, "dashboard_owner")
 
     if GENERATE_IMPORT_APP_OWNER:
-        # profilo import: DB_USER=app_owner e DB_ROLE=app_owner NON serve, perché per import usi login diretto app_owner.
-        # qui teniamo DB_ROLE coerente, se poi lo vuoi diverso lo modifichiamo.
         write_env(".env_import_app_owner", IMPORT_USER, IMPORT_PASSWORD, "app_owner")
 
 
