@@ -105,7 +105,6 @@ with st.expander("Debug config (.env / secrets)"):
 # DB config
 # -------------------------
 def get_db_dsn() -> str:
-    # Streamlit Cloud: puoi anche mettere DB_DSN in secrets e leggerlo qui se vuoi in futuro.
     dsn = os.getenv("DB_DSN") or os.getenv("DATABASE_URL")
     if dsn:
         return dsn
@@ -124,7 +123,6 @@ def get_db_dsn() -> str:
 
 
 def get_db_role() -> str:
-    # Se c'è login, il ruolo arriva dalla sessione
     if st.session_state.get("auth_ok") is True and st.session_state.get("db_role"):
         return str(st.session_state["db_role"])
     return os.getenv("DB_ROLE") or "app_readonly"
@@ -142,7 +140,6 @@ def is_dashboard_role(db_role: str) -> bool:
 # DEMO DATA (mock ricchi)
 # -------------------------
 def _demo_seed() -> int:
-    # seed stabile per sessione (così non cambia a ogni rerun)
     if "demo_seed" not in st.session_state:
         st.session_state["demo_seed"] = random.randint(10_000, 99_999)
     return int(st.session_state["demo_seed"])
@@ -153,13 +150,9 @@ def _demo_now() -> datetime:
 
 
 def demo_query(sql: str, params: tuple | None, db_role: str) -> list[dict]:
-    """
-    Mock "ricchi" coerenti con la UI.
-    """
     _ = _demo_seed()
     s = (sql or "").lower()
 
-    # elenco punti vendita
     if "app.api_elenco_punti_vendita" in s:
         return [
             {"punto_vendita_id": 7, "punto_vendita": "Ancona Centro"},
@@ -167,19 +160,14 @@ def demo_query(sql: str, params: tuple | None, db_role: str) -> list[dict]:
             {"punto_vendita_id": 9, "punto_vendita": "Chieti Scalo"},
         ]
 
-    # mapping piste (DEMO)
     if "app.api_pista_map" in s:
         return [
             {"codice": "MNP", "valore_db": "A.2 VOLUMI SIM MNP"},
             {"codice": "FAMILY", "valore_db": "A.5 VOLUMI CONVERGENZA FISSO - MOBILE"},
         ]
 
-    # KPI torte (api_kpi_esiti)
     if "app.api_kpi_esiti" in s:
-        # piccolo shake basato sul ruolo (solo estetico)
-        bump = 0
-        if db_role.startswith("op_"):
-            bump = 7
+        bump = 7 if db_role.startswith("op_") else 0
         return [
             {"stato": "DA_ESITARE", "totale": 140 + bump},
             {"stato": "IN_LAVORAZIONE", "totale": 18 + (bump // 2)},
@@ -189,9 +177,7 @@ def demo_query(sql: str, params: tuple | None, db_role: str) -> list[dict]:
             {"stato": "BO_KO", "totale": 4},
         ]
 
-    # drill-down (api_drill_esiti)
     if "app.api_drill_esiti" in s:
-        # params: (selected_state, pv_id, selected_pista_for_drill, limit)
         stato = params[0] if params and len(params) >= 1 else "DA_ESITARE"
         pista = params[2] if params and len(params) >= 3 else None
         limit = int(params[3]) if params and len(params) >= 4 else 300
@@ -208,14 +194,18 @@ def demo_query(sql: str, params: tuple | None, db_role: str) -> list[dict]:
             d_att = datetime.combine(base_date + timedelta(days=(i % 25)), datetime.min.time()) + timedelta(hours=9)
             esito_at = d_att + timedelta(days=1, hours=1)
 
-            if pista is None:
-                pista_val = "A.2 VOLUMI SIM MNP" if i % 2 == 0 else "A.5 VOLUMI CONVERGENZA FISSO - MOBILE"
-            else:
-                pista_val = pista
+            pista_val = pista if pista is not None else ("A.2 VOLUMI SIM MNP" if i % 2 == 0 else "A.5 VOLUMI CONVERGENZA FISSO - MOBILE")
 
-            nota = "Nota demo"
-            if str(stato) == "IN_LAVORAZIONE":
-                nota = "In lavorazione: richiesta integrazione documentale"
+            nota = None
+            esito_corr = None
+            esito_at_val = None
+            if str(stato) != "DA_ESITARE":
+                esito_corr = str(stato)
+                esito_at_val = esito_at
+                if str(stato) == "IN_LAVORAZIONE":
+                    nota = "In lavorazione: richiesta integrazione documentale"
+                else:
+                    nota = "Nota demo"
 
             rows.append(
                 {
@@ -224,32 +214,25 @@ def demo_query(sql: str, params: tuple | None, db_role: str) -> list[dict]:
                     "telefono": f"349{_demo_seed():05d}{i:03d}"[-10:],
                     "seriale_sim": f"SIM-DEMO-{i:06d}",
                     "pista": pista_val,
-                    "esito_corrente": None if str(stato) == "DA_ESITARE" else str(stato),
-                    "esito_at": esito_at if str(stato) != "DA_ESITARE" else None,
-                    "nota": nota if str(stato) != "DA_ESITARE" else None,
+                    "esito_corrente": esito_corr,
+                    "esito_at": esito_at_val,
+                    "nota": nota,
                     "punto_vendita": pv_name if pv_name != "TUTTI" else (pv_map[7] if i % 3 == 0 else pv_map[8]),
                 }
             )
         return rows
 
-    # Worklist store mode (v_pratiche_lista_sec)
     if "from app.v_pratiche_lista_sec" in s:
         pista = params[0] if params and len(params) >= 1 else "A.2 VOLUMI SIM MNP"
         base_date = _demo_now().date() - timedelta(days=20)
 
         rows: list[dict] = []
-        for i in range(1, 121):  # worklist ricca
+        for i in range(1, 121):
             att_id = 2000 + i
             d_att = datetime.combine(base_date + timedelta(days=(i % 20)), datetime.min.time()) + timedelta(hours=10)
-            # un po' di IN_LAVORAZIONE sparsi
             esito_corr = "IN_LAVORAZIONE" if i % 17 == 0 else None
             nota = "Attendere esito cliente" if esito_corr == "IN_LAVORAZIONE" else None
-
-            # next_action_label coerente
-            if esito_corr == "IN_LAVORAZIONE":
-                label = "Rilavorare: completa pratica"
-            else:
-                label = "Esita la pratica (OK/KO)"
+            label = "Rilavorare: completa pratica" if esito_corr == "IN_LAVORAZIONE" else "Esita la pratica (OK/KO)"
 
             rows.append(
                 {
@@ -264,15 +247,12 @@ def demo_query(sql: str, params: tuple | None, db_role: str) -> list[dict]:
                 }
             )
 
-        # simuliamo ordering “vecchio → nuovo” se la query contiene "order by wl.data_attivazione asc"
         if "order by wl.data_attivazione asc" in s:
             rows.sort(key=lambda r: (r["data_attivazione"], r["attivazione_id"]))
         else:
-            # default: simula sort_at asc (qui la data_attivazione già fa il lavoro)
             rows.sort(key=lambda r: (r["data_attivazione"], r["attivazione_id"]))
         return rows[:500]
 
-    # KPI tab (v_attivazione_stato_sec group by)
     if "from app.v_attivazione_stato_sec" in s and "group by 1" in s:
         return [
             {"stato": "DA_ESITARE", "totale": 92},
@@ -283,7 +263,6 @@ def demo_query(sql: str, params: tuple | None, db_role: str) -> list[dict]:
             {"stato": "BO_KO", "totale": 3},
         ]
 
-    # pratiche lavorate (v_attivazione_stato_sec con esito_corrente not null)
     if "from app.v_attivazione_stato_sec" in s and "where s.esito_corrente is not null" in s:
         pista = params[0] if params and len(params) >= 1 else "A.2 VOLUMI SIM MNP"
         base_date = _demo_now() - timedelta(days=14)
@@ -301,14 +280,11 @@ def demo_query(sql: str, params: tuple | None, db_role: str) -> list[dict]:
                     "nota": "Esempio nota" if i % 5 == 0 else None,
                 }
             )
-        # in UI mostri solo alcune colonne
         return rows
 
-    # chiamate di scrittura (DEMO): simuliamo event_id sempre
     if "app.api_take_in_charge" in s or "app.api_ins_esito_app" in s or "app.api_ins_esito_bo" in s:
         return [{"event_id": 999999}]
 
-    # debug identity
     if "select session_user" in s and "current_user" in s:
         return [{"session_user": "streamlit_demo", "current_user": db_role}]
 
@@ -381,12 +357,12 @@ def pista_value(codice: str) -> str:
 # Colori esiti (coerenti)
 # -------------------------
 ESITO_COLORS = {
-    "DA_ESITARE": "#9CA3AF",      # grigio
-    "IN_LAVORAZIONE": "#F59E0B",  # ambra
-    "OK": "#10B981",              # verde
-    "KO": "#EF4444",              # rosso
-    "BO_OK": "#3B82F6",           # blu
-    "BO_KO": "#8B5CF6",           # viola
+    "DA_ESITARE": "#9CA3AF",
+    "IN_LAVORAZIONE": "#F59E0B",
+    "OK": "#10B981",
+    "KO": "#EF4444",
+    "BO_OK": "#3B82F6",
+    "BO_KO": "#8B5CF6",
 }
 DARK_BG = "rgb(14,17,24)"
 
@@ -434,7 +410,7 @@ else:
 
 
 # ==========================
-# DASHBOARD (app_owner / dashboard_owner)
+# DASHBOARD
 # ==========================
 def build_pie_figure(df_kpi: pd.DataFrame, title: str) -> tuple[go.Figure, list[str]]:
     df = df_kpi.copy()
@@ -494,7 +470,7 @@ def render_one_pie(pv_id: int | None, p_pista: str | None, title: str, key_suffi
             if 0 <= idx < len(labels):
                 clicked_state = str(labels[idx])
     else:
-        st.plotly_chart(fig, width="stretch")
+        st.plotly_chart(fig, use_container_width=True)
         st.caption("Per abilitare il click sulle torte: `pip install streamlit-plotly-events`")
 
     if clicked_state:
@@ -587,7 +563,7 @@ def render_dashboard_esiti() -> None:
             df_edit,
             key=f"drill_editor_{st.session_state['drill_sel_reset_token']}",
             hide_index=True,
-            width="stretch",
+            use_container_width=True,
             height=420,
             disabled=[c for c in df_edit.columns if c != "SEL"],
             column_config={
@@ -637,7 +613,7 @@ def render_dashboard_esiti() -> None:
     else:
         st.dataframe(
             df_drill,
-            width="stretch",
+            use_container_width=True,
             hide_index=True,
             height=420,
             column_config={
@@ -653,7 +629,6 @@ def render_dashboard_esiti() -> None:
             },
         )
 
-    # Gestione esiti (solo app_owner)
     if get_db_role() == "app_owner":
         st.divider()
         st.subheader("Gestione esiti (app_owner)")
@@ -734,7 +709,7 @@ def render_dashboard_esiti() -> None:
 
 
 # ==========================
-# NEGOZIO (worklist + KPI tab)
+# NEGOZIO
 # ==========================
 def render_kpi_per_tab(pista_exact: str | None, energia_mode: bool = False) -> None:
     st.subheader("KPI (tab)")
@@ -832,7 +807,7 @@ def render_pratiche_lavorate(pista_exact: str | None, energia_mode: bool = False
 
     st.dataframe(
         df_worked[["data_attivazione", "telefono", "seriale_sim", "pista", "esito_corrente", "nota"]],
-        width="stretch",
+        use_container_width=True,
         hide_index=True,
         column_config={
             "data_attivazione": st.column_config.TextColumn("Data"),
@@ -944,7 +919,7 @@ def render_worklist(pista_exact: str | None, energia_mode: bool = False, pista_c
         df[display_cols],
         column_config=col_config,
         hide_index=True,
-        width="stretch",
+        use_container_width=True,
         height=540,
         disabled=visible_cols,
     )
