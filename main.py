@@ -1,13 +1,13 @@
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
+import random
 
 import pandas as pd
 import psycopg
 from psycopg import sql as psql
 from dotenv import load_dotenv
 import streamlit as st
-
 import plotly.graph_objects as go
 
 # Click sulle torte (opzionale; se non installato, fallback senza drill-click)
@@ -18,7 +18,8 @@ except Exception:
 
 
 # -------------------------
-# ENV (.env + DOTENV_PATH)
+# ENV (.env + DOTENV_PATH) - in locale
+# (su Streamlit Cloud userai st.secrets, ma lasciamo invariato)
 # -------------------------
 PROJECT_ROOT = Path(__file__).resolve().parent
 dotenv_path = os.getenv("DOTENV_PATH")
@@ -32,7 +33,60 @@ else:
 
 st.set_page_config(page_title="Dashboard Gest", layout="wide")
 
-with st.expander("Debug config (.env)"):
+
+# -------------------------
+# Secrets / Demo / Login (Streamlit Cloud)
+# -------------------------
+def is_demo_mode() -> bool:
+    try:
+        return str(st.secrets.get("DEMO_MODE", "0")) == "1"
+    except Exception:
+        return os.getenv("DEMO_MODE", "0") == "1"
+
+
+def get_users_dict() -> dict[str, str]:
+    try:
+        users = st.secrets.get("users", {})
+        return {str(k): str(v) for k, v in users.items()}
+    except Exception:
+        return {}
+
+
+def render_login() -> None:
+    """
+    Login definitivo: username + password.
+    Il ruolo DB coincide con lo username (app_owner / dashboard_owner / op_*).
+    """
+    if st.session_state.get("auth_ok") is True and st.session_state.get("db_role"):
+        return
+
+    st.title("Dashboard Gest")
+    st.caption("Accesso")
+
+    users = get_users_dict()
+    if not users:
+        st.error("Credenziali non configurate (Settings → Secrets → [users]).")
+        st.stop()
+
+    with st.form("login_form", clear_on_submit=False):
+        u = st.text_input("Utente").strip()
+        p = st.text_input("Password", type="password")
+        ok = st.form_submit_button("Entra", type="primary")
+
+    if not ok:
+        st.stop()
+
+    if not u or users.get(u) != p:
+        st.error("Credenziali non valide.")
+        st.stop()
+
+    st.session_state["auth_ok"] = True
+    st.session_state["db_role"] = u
+    st.rerun()
+
+
+with st.expander("Debug config (.env / secrets)"):
+    st.write("DEMO_MODE:", "1" if is_demo_mode() else "0")
     st.write("DOTENV_PATH:", os.getenv("DOTENV_PATH"))
     st.write("DB_HOST:", os.getenv("DB_HOST"))
     st.write("DB_PORT:", os.getenv("DB_PORT"))
@@ -40,10 +94,18 @@ with st.expander("Debug config (.env)"):
     st.write("DB_USER:", os.getenv("DB_USER"))
     st.write("DB_PASSWORD presente:", bool(os.getenv("DB_PASSWORD")))
     st.write("DB_DSN/DATABASE_URL presente:", bool(os.getenv("DB_DSN") or os.getenv("DATABASE_URL")))
-    st.write("DB_ROLE (effettivo):", os.getenv("DB_ROLE") or "app_readonly")
+    st.write("DB_ROLE (.env):", os.getenv("DB_ROLE") or "app_readonly")
+    try:
+        st.write("Secrets users presenti:", bool(st.secrets.get("users", {})))
+    except Exception:
+        st.write("Secrets users presenti:", False)
 
 
+# -------------------------
+# DB config
+# -------------------------
 def get_db_dsn() -> str:
+    # Streamlit Cloud: puoi anche mettere DB_DSN in secrets e leggerlo qui se vuoi in futuro.
     dsn = os.getenv("DB_DSN") or os.getenv("DATABASE_URL")
     if dsn:
         return dsn
@@ -62,6 +124,9 @@ def get_db_dsn() -> str:
 
 
 def get_db_role() -> str:
+    # Se c'è login, il ruolo arriva dalla sessione
+    if st.session_state.get("auth_ok") is True and st.session_state.get("db_role"):
+        return str(st.session_state["db_role"])
     return os.getenv("DB_ROLE") or "app_readonly"
 
 
@@ -74,10 +139,190 @@ def is_dashboard_role(db_role: str) -> bool:
 
 
 # -------------------------
+# DEMO DATA (mock ricchi)
+# -------------------------
+def _demo_seed() -> int:
+    # seed stabile per sessione (così non cambia a ogni rerun)
+    if "demo_seed" not in st.session_state:
+        st.session_state["demo_seed"] = random.randint(10_000, 99_999)
+    return int(st.session_state["demo_seed"])
+
+
+def _demo_now() -> datetime:
+    return datetime.now()
+
+
+def demo_query(sql: str, params: tuple | None, db_role: str) -> list[dict]:
+    """
+    Mock "ricchi" coerenti con la UI.
+    """
+    _ = _demo_seed()
+    s = (sql or "").lower()
+
+    # elenco punti vendita
+    if "app.api_elenco_punti_vendita" in s:
+        return [
+            {"punto_vendita_id": 7, "punto_vendita": "Ancona Centro"},
+            {"punto_vendita_id": 8, "punto_vendita": "Conero"},
+            {"punto_vendita_id": 9, "punto_vendita": "Chieti Scalo"},
+        ]
+
+    # mapping piste (DEMO)
+    if "app.api_pista_map" in s:
+        return [
+            {"codice": "MNP", "valore_db": "A.2 VOLUMI SIM MNP"},
+            {"codice": "FAMILY", "valore_db": "A.5 VOLUMI CONVERGENZA FISSO - MOBILE"},
+        ]
+
+    # KPI torte (api_kpi_esiti)
+    if "app.api_kpi_esiti" in s:
+        # piccolo shake basato sul ruolo (solo estetico)
+        bump = 0
+        if db_role.startswith("op_"):
+            bump = 7
+        return [
+            {"stato": "DA_ESITARE", "totale": 140 + bump},
+            {"stato": "IN_LAVORAZIONE", "totale": 18 + (bump // 2)},
+            {"stato": "OK", "totale": 64 + bump},
+            {"stato": "KO", "totale": 22 + (bump // 3)},
+            {"stato": "BO_OK", "totale": 9},
+            {"stato": "BO_KO", "totale": 4},
+        ]
+
+    # drill-down (api_drill_esiti)
+    if "app.api_drill_esiti" in s:
+        # params: (selected_state, pv_id, selected_pista_for_drill, limit)
+        stato = params[0] if params and len(params) >= 1 else "DA_ESITARE"
+        pista = params[2] if params and len(params) >= 3 else None
+        limit = int(params[3]) if params and len(params) >= 4 else 300
+        limit = max(1, min(limit, 5000))
+
+        pv_map = {7: "Ancona Centro", 8: "Conero", 9: "Chieti Scalo"}
+        pv_id = params[1] if params and len(params) >= 2 else None
+        pv_name = pv_map.get(int(pv_id), "Ancona Centro") if pv_id else "TUTTI"
+
+        base_date = _demo_now().date() - timedelta(days=25)
+        rows: list[dict] = []
+        for i in range(1, min(limit, 200) + 1):
+            att_id = 1000 + i
+            d_att = datetime.combine(base_date + timedelta(days=(i % 25)), datetime.min.time()) + timedelta(hours=9)
+            esito_at = d_att + timedelta(days=1, hours=1)
+
+            if pista is None:
+                pista_val = "A.2 VOLUMI SIM MNP" if i % 2 == 0 else "A.5 VOLUMI CONVERGENZA FISSO - MOBILE"
+            else:
+                pista_val = pista
+
+            nota = "Nota demo"
+            if str(stato) == "IN_LAVORAZIONE":
+                nota = "In lavorazione: richiesta integrazione documentale"
+
+            rows.append(
+                {
+                    "attivazione_id": att_id,
+                    "data_attivazione": d_att,
+                    "telefono": f"349{_demo_seed():05d}{i:03d}"[-10:],
+                    "seriale_sim": f"SIM-DEMO-{i:06d}",
+                    "pista": pista_val,
+                    "esito_corrente": None if str(stato) == "DA_ESITARE" else str(stato),
+                    "esito_at": esito_at if str(stato) != "DA_ESITARE" else None,
+                    "nota": nota if str(stato) != "DA_ESITARE" else None,
+                    "punto_vendita": pv_name if pv_name != "TUTTI" else (pv_map[7] if i % 3 == 0 else pv_map[8]),
+                }
+            )
+        return rows
+
+    # Worklist store mode (v_pratiche_lista_sec)
+    if "from app.v_pratiche_lista_sec" in s:
+        pista = params[0] if params and len(params) >= 1 else "A.2 VOLUMI SIM MNP"
+        base_date = _demo_now().date() - timedelta(days=20)
+
+        rows: list[dict] = []
+        for i in range(1, 121):  # worklist ricca
+            att_id = 2000 + i
+            d_att = datetime.combine(base_date + timedelta(days=(i % 20)), datetime.min.time()) + timedelta(hours=10)
+            # un po' di IN_LAVORAZIONE sparsi
+            esito_corr = "IN_LAVORAZIONE" if i % 17 == 0 else None
+            nota = "Attendere esito cliente" if esito_corr == "IN_LAVORAZIONE" else None
+
+            # next_action_label coerente
+            if esito_corr == "IN_LAVORAZIONE":
+                label = "Rilavorare: completa pratica"
+            else:
+                label = "Esita la pratica (OK/KO)"
+
+            rows.append(
+                {
+                    "attivazione_id": att_id,
+                    "data_attivazione": d_att,
+                    "telefono": f"348{_demo_seed():05d}{i:03d}"[-10:],
+                    "seriale_sim": f"WLSIM-{i:06d}",
+                    "pista": pista,
+                    "esito_corrente": esito_corr,
+                    "nota": nota,
+                    "next_action_label": label,
+                }
+            )
+
+        # simuliamo ordering “vecchio → nuovo” se la query contiene "order by wl.data_attivazione asc"
+        if "order by wl.data_attivazione asc" in s:
+            rows.sort(key=lambda r: (r["data_attivazione"], r["attivazione_id"]))
+        else:
+            # default: simula sort_at asc (qui la data_attivazione già fa il lavoro)
+            rows.sort(key=lambda r: (r["data_attivazione"], r["attivazione_id"]))
+        return rows[:500]
+
+    # KPI tab (v_attivazione_stato_sec group by)
+    if "from app.v_attivazione_stato_sec" in s and "group by 1" in s:
+        return [
+            {"stato": "DA_ESITARE", "totale": 92},
+            {"stato": "IN_LAVORAZIONE", "totale": 11},
+            {"stato": "OK", "totale": 37},
+            {"stato": "KO", "totale": 14},
+            {"stato": "BO_OK", "totale": 6},
+            {"stato": "BO_KO", "totale": 3},
+        ]
+
+    # pratiche lavorate (v_attivazione_stato_sec con esito_corrente not null)
+    if "from app.v_attivazione_stato_sec" in s and "where s.esito_corrente is not null" in s:
+        pista = params[0] if params and len(params) >= 1 else "A.2 VOLUMI SIM MNP"
+        base_date = _demo_now() - timedelta(days=14)
+        rows: list[dict] = []
+        for i in range(1, 51):
+            d_att = base_date - timedelta(days=(i % 14))
+            rows.append(
+                {
+                    "data_attivazione": d_att,
+                    "telefono": f"3497777{i:03d}",
+                    "seriale_sim": f"SIM-WORKED-{i:06d}",
+                    "pista": pista,
+                    "esito_corrente": "OK" if i % 5 != 0 else "KO",
+                    "esito_at": d_att + timedelta(hours=2),
+                    "nota": "Esempio nota" if i % 5 == 0 else None,
+                }
+            )
+        # in UI mostri solo alcune colonne
+        return rows
+
+    # chiamate di scrittura (DEMO): simuliamo event_id sempre
+    if "app.api_take_in_charge" in s or "app.api_ins_esito_app" in s or "app.api_ins_esito_bo" in s:
+        return [{"event_id": 999999}]
+
+    # debug identity
+    if "select session_user" in s and "current_user" in s:
+        return [{"session_user": "streamlit_demo", "current_user": db_role}]
+
+    return []
+
+
+# -------------------------
 # DB (cache + SET ROLE immediato)
 # -------------------------
 @st.cache_data(ttl=15)
 def query(sql: str, params: tuple | None, db_role: str) -> list[dict]:
+    if is_demo_mode():
+        return demo_query(sql, params, db_role)
+
     dsn = get_db_dsn()
     with psycopg.connect(dsn) as conn:
         with conn.cursor() as cur_role:
@@ -143,9 +388,13 @@ ESITO_COLORS = {
     "BO_OK": "#3B82F6",           # blu
     "BO_KO": "#8B5CF6",           # viola
 }
-
 DARK_BG = "rgb(14,17,24)"
 
+
+# -------------------------
+# LOGIN (prima di usare db_role)
+# -------------------------
+render_login()
 
 # -------------------------
 # UI
@@ -157,9 +406,16 @@ dashboard_mode = is_dashboard_role(db_role)
 st.title("Dashboard Gest")
 st.caption(f"Aggiornato: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
 
-if st.button("Aggiorna dati"):
-    st.cache_data.clear()
-    st.rerun()
+col_r, col_logout = st.columns([1, 1])
+with col_r:
+    if st.button("Aggiorna dati"):
+        st.cache_data.clear()
+        st.rerun()
+with col_logout:
+    if st.button("Logout"):
+        st.session_state.clear()
+        st.cache_data.clear()
+        st.rerun()
 
 if os.getenv("APP_DEBUG") == "1":
     with st.expander("Debug DB identity (session_user/current_user)"):
@@ -173,7 +429,7 @@ if store_mode:
 elif dashboard_mode:
     st.info("Modalità dashboard: KPI a torta + drill-down (DB-first).")
 else:
-    st.warning("Ruolo DB non riconosciuto per questa UI. Controlla DB_ROLE nel .env.")
+    st.warning("Ruolo DB non riconosciuto per questa UI.")
     st.stop()
 
 
@@ -215,9 +471,6 @@ def build_pie_figure(df_kpi: pd.DataFrame, title: str) -> tuple[go.Figure, list[
 
 
 def render_one_pie(pv_id: int | None, p_pista: str | None, title: str, key_suffix: str) -> tuple[str | None, str | None]:
-    """
-    Ritorna (selected_state, selected_pista) SOLO se l'utente clicca una fetta.
-    """
     rows = q("SELECT stato, totale FROM app.api_kpi_esiti(%s, %s);", (pv_id, p_pista))
     if not rows:
         st.info(f"Nessun dato per: {title}")
@@ -272,11 +525,9 @@ def render_dashboard_esiti() -> None:
         limit = st.number_input("Righe drill-down (max 5000)", min_value=10, max_value=5000, value=300, step=10)
 
     pv_id = pv_label_to_id[pv_label]
-
     pista_code = pista_label_to_code[pista_label]
     pista_db_value = pista_value(pista_code) if pista_code is not None else None
 
-    # KPI (torte) + selezione stato SOLO via click
     selected_state = None
     selected_pista_for_drill = None
 
@@ -325,21 +576,17 @@ def render_dashboard_esiti() -> None:
     if "esito_at" in df_drill.columns:
         df_drill["esito_at"] = pd.to_datetime(df_drill["esito_at"], errors="coerce").dt.strftime("%d/%m/%Y %H:%M:%S")
 
-    # token per resettare SEL (auto-reset dopo apply)
     if "drill_sel_reset_token" not in st.session_state:
         st.session_state["drill_sel_reset_token"] = 0
 
-    selected_att_id = None
-
     if get_db_role() == "app_owner":
-        # 1) nascondo attivazione_id (lo metto come index)
         df_edit = df_drill.copy().set_index("attivazione_id")
         df_edit.insert(0, "SEL", False)
 
         edited = st.data_editor(
             df_edit,
             key=f"drill_editor_{st.session_state['drill_sel_reset_token']}",
-            hide_index=True,  # attivazione_id resta nascosto
+            hide_index=True,
             width="stretch",
             height=420,
             disabled=[c for c in df_edit.columns if c != "SEL"],
@@ -359,9 +606,8 @@ def render_dashboard_esiti() -> None:
         sel = edited[edited["SEL"] == True]  # noqa: E712
         if len(sel) == 1:
             selected_att_id = int(sel.index[0])
-
-            # 2) highlight "soft": card riepilogo (riga selezionata)
             row = sel.iloc[0].to_dict()
+
             st.success(
                 "Riga selezionata"
                 f"\n\n- attivazione_id: {selected_att_id}"
@@ -407,9 +653,7 @@ def render_dashboard_esiti() -> None:
             },
         )
 
-    # --------------------------
-    # GESTIONE ESITI (SOLO app_owner)
-    # --------------------------
+    # Gestione esiti (solo app_owner)
     if get_db_role() == "app_owner":
         st.divider()
         st.subheader("Gestione esiti (app_owner)")
@@ -482,7 +726,6 @@ def render_dashboard_esiti() -> None:
 
                 st.session_state["drill_sel_reset_token"] += 1
                 st.session_state.pop("selected_pratica", None)
-
                 st.cache_data.clear()
                 st.rerun()
 
@@ -537,6 +780,7 @@ def render_kpi_per_tab(pista_exact: str | None, energia_mode: bool = False) -> N
     cols = st.columns(6)
     for i, row in enumerate(kpi):
         cols[i % len(cols)].metric(label=str(row["stato"]), value=int(row["totale"]))
+
 
 
 def render_pratiche_lavorate(pista_exact: str | None, energia_mode: bool = False) -> None:
@@ -602,6 +846,7 @@ def render_pratiche_lavorate(pista_exact: str | None, energia_mode: bool = False
     )
 
 
+
 def render_worklist(pista_exact: str | None, energia_mode: bool = False, pista_code: str | None = None) -> None:
     st.subheader("Worklist")
 
@@ -610,7 +855,6 @@ def render_worklist(pista_exact: str | None, energia_mode: bool = False, pista_c
         return
 
     if pista_exact:
-        # Ordering: FAMILY dal più vecchio al più nuovo; MNP invariato
         if pista_code == "FAMILY":
             order_clause = "ORDER BY wl.data_attivazione ASC NULLS LAST, wl.sort_at ASC NULLS LAST"
         else:
