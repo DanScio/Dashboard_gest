@@ -1,0 +1,35 @@
+# Dashboard_Gest — Operatività (Freeze)
+
+## Architettura (regola chiave)
+- Streamlit si connette SEMPRE come `dashboard_user`
+- Subito dopo la connessione fa `SET ROLE <DB_ROLE>`
+- Tutte le SELECT passano da view sicure (`app.v_attivazione_stato_sec`)
+- Scritture SOLO via funzioni API `SECURITY DEFINER`
+
+## File .env
+### Base (sola lettura)
+.env
+- DB_USER=dashboard_user
+- DB_PASSWORD=<pwd dashboard_user>
+- DB_ROLE=app_readonly
+
+### Negozi (operatori)
+.env_<negozio>
+- DB_USER=dashboard_user
+- DB_PASSWORD=<pwd dashboard_user>
+- DB_ROLE=op_<negozio>
+
+Esempio:
+DB_ROLE=op_conero
+
+### Backoffice
+.env_bo_main
+- DB_USER=dashboard_user
+- DB_PASSWORD=<pwd dashboard_user>
+- DB_ROLE=bo_main
+
+## Avvio Streamlit (Windows)
+PowerShell:
+```powershell
+$env:DOTENV_PATH=".env_conero"
+streamlit run main.py
